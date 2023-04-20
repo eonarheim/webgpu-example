@@ -1,132 +1,49 @@
-console.log('Hello WebGPU');
-
+import { Screen } from './screen';
 import swordPNG from './icon.png';
-
-function createQuad(x: number, y: number, width: number, height: number) {
-    // clip space
-    const vertices = new Float32Array([
-        // x, y 
-        // triangle 1
-        x + 0.0, y + 0.0,
-        x + width, y + 0.0,
-        x + 0.0, y + height,
-
-        // triangle 2
-        x + 0.0,y + height,
-        x + width, y + 0.0,
-        x + width, y + height
-    ]);
-
-    return vertices;
-}
+import { Texture } from './texture';
+import { Sprite } from './sprite';
 
 async function main() {
-    const adapter = await navigator.gpu?.requestAdapter();
-    const device = await adapter?.requestDevice();
+    const screen = new Screen(600, 400);
+    await screen.init();
 
-    if (!device) {
-        throw new Error("Error no WebGPU");
-        return;
-    }
-
-    const canvas = document.getElementById('game') as HTMLCanvasElement;
-    canvas.width = 600;
-    canvas.height = 400;
-    const context = canvas.getContext('webgpu');
-
-    // rgba8unorm or bgra8unorm
-    const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-    context?.configure({
-        device,
-        format: presentationFormat,
-        alphaMode: 'premultiplied'
-    });
-
-    function ortho(left: number, right: number, bottom: number, top: number, near: number, far: number) {
-        return new Float32Array([
-            2 / (right - left), 0, 0, 0,
-            0, 2 / (top - bottom), 0, 0,
-            0, 0, 2 / (near - far), 0,
-        
-            (left + right) / (left - right),
-            (bottom + top) / (bottom - top),
-            (near + far) / (near - far),
-            1,
-        ]);
-    }
+    const device = screen.device;
 
     // uniform buffer
-
     const matrixBuffer = device.createBuffer({
         size: 4 * 4 * 4,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
-    const orthMatrix =  ortho(
-        0,
-        canvas.clientWidth,
-        canvas.clientHeight,
-        0,
-        -10,
-        10
-    );
-
-    device.queue.writeBuffer(matrixBuffer, 0, orthMatrix);
+    device.queue.writeBuffer(matrixBuffer, 0, screen.matrix);
 
     // load texture image
-    const img = document.createElement('img');
-    img.src = swordPNG;
+    const swordTexture = new Texture(swordPNG);
+    await swordTexture.load(screen);
 
-    await img.decode();
-    const bitmap = await createImageBitmap(img);
+    // sword sprite
 
-    const swordTexture = device.createTexture({
-        size: [bitmap.width, bitmap.height, 1],
-        format: presentationFormat,
-        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT
-    });
+    const sprite = new Sprite(swordTexture, screen);
+    sprite.velX = 100; // pixels/sec
 
-    device.queue.copyExternalImageToTexture(
-        { source: bitmap, flipY: false },
-        { texture: swordTexture },
-        [bitmap.width, bitmap.height]
-    )
+    const sprite2 = new Sprite(swordTexture, screen);
+    sprite2.x = 600;
+    sprite2.velX = -100;
 
-    let swordX = 0;
-    let swordY = 100;
-    let swordVelX = 100; // pixels/sec
+    const sprites = [sprite, sprite2];
 
-    // geometry
-    let vertices = createQuad(swordX, swordY, 100, 100);
-    
-    // uv
-    const uv = new Float32Array([
-        // triangle 1
-        0.0, 0.0,
-        1.0, 0.0,
-        0.0, 1.0,
+    function randomNumber(min: number, max: number) {
+        return Math.random() * (max - min) + min;
+    }
 
-        // triangle 2
-        0.0, 1.0,
-        1.0, 0.0,
-        1.0, 1.0
-    ]);
-
-    // Create a handle for the vertex buffer
-    const vertexBuffer = device.createBuffer({
-        size: vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-    });
-
-
-    
-    
-    // Create a handle for the uv
-    const uvBuffer = device.createBuffer({
-        size: uv.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-    })
-    device.queue.writeBuffer(uvBuffer, 0, uv, 0, uv.length);
+    for (let i = 0; i < 1000; i++) {
+        const sprite = new Sprite(swordTexture, screen);
+        sprite.x = Math.random() * 600;
+        sprite.y = Math.random() * 400;
+        sprite.velX = randomNumber(-100, 100);
+        sprite.velY = randomNumber(-100, 100);
+        sprites.push(sprite);
+    }
 
 
     // create vertex & fragment
@@ -169,7 +86,7 @@ async function main() {
                 {
                     arrayStride: 4 * 2, // 4 bytes per float * 2 floats in a vec2f
                     attributes: [
-                        { 
+                        {
                             format: 'float32x2', // https://gpuweb.github.io/gpuweb/#enumdef-gpuvertexformat
                             offset: 0,
                             shaderLocation: 0
@@ -179,7 +96,7 @@ async function main() {
                 {
                     arrayStride: 4 * 2, // 4 bytes per float * 2 floats in a vec2f
                     attributes: [
-                        { 
+                        {
                             format: 'float32x2', // https://gpuweb.github.io/gpuweb/#enumdef-gpuvertexformat
                             offset: 0,
                             shaderLocation: 1
@@ -192,8 +109,8 @@ async function main() {
             module: shader,
             entryPoint: 'fragment',
             targets: [
-                { 
-                    format: presentationFormat,
+                {
+                    format: screen.presentationFormat,
                     blend: {
                         color: {
                             operation: 'add',
@@ -221,43 +138,55 @@ async function main() {
         layout: pipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: sampler },
-            { binding: 1, resource: swordTexture.createView() },
+            { binding: 1, resource: swordTexture.tex.createView() },
             { binding: 2, resource: { buffer: matrixBuffer } }
         ]
     })
 
     function update(elapsedMs: number) {
-        const seconds = elapsedMs / 1000;
-
-        swordX += swordVelX * seconds; // 1 pixel to the right every frame
-        vertices = createQuad(swordX, swordY, 100, 100);
-
-        // Actually need to fill the vertex buffer in the gpu with our data
-        device!.queue.writeBuffer(vertexBuffer, 0, vertices, 0, vertices.length);
+        for (let sprite of sprites) {
+            sprite.update(elapsedMs);
+        }
     }
 
     function draw() {
         const commandEncoder = device!.createCommandEncoder();
-
-        const renderPass = commandEncoder.beginRenderPass({
+        const clearPass = commandEncoder.beginRenderPass({
             label: 'Awesome render pass',
             colorAttachments: [
                 {
                     clearValue: [0.3, 0.3, 0.3, 1],
                     loadOp: 'clear',
                     storeOp: 'store',
-                    view: context!.getCurrentTexture().createView()
+                    view: screen.context!.getCurrentTexture().createView()
                 }
             ]
         });
+        clearPass.end();
+        // const commandEncoder = device!.createCommandEncoder();
+        for (let sprite of sprites) {
+            // Actually need to fill the vertex & uv buffer in the gpu with our data
+            device!.queue.writeBuffer(sprite.uvBuffer, 0, sprite.uv, 0, sprite.uv.length);
+            device!.queue.writeBuffer(sprite.vertexBuffer, 0, sprite.quad, 0, sprite.quad.length);
 
-        renderPass.setPipeline(pipeline);
-        renderPass.setVertexBuffer(0, vertexBuffer);
-        renderPass.setVertexBuffer(1, uvBuffer);
-        renderPass.setBindGroup(0, bindGroup);
-        renderPass.draw(6);
-        renderPass.end();
+            const renderPass = commandEncoder.beginRenderPass({
+                label: 'Awesome render pass',
+                colorAttachments: [
+                    {
+                        loadOp: 'load',
+                        storeOp: 'store',
+                        view: screen.context!.getCurrentTexture().createView()
+                    }
+                ]
+            });
 
+            renderPass.setPipeline(pipeline);
+            renderPass.setVertexBuffer(0, sprite.vertexBuffer);
+            renderPass.setVertexBuffer(1, sprite.uvBuffer);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.draw(6);
+            renderPass.end();
+        }
         device!.queue.submit([commandEncoder.finish()]);
     }
 
